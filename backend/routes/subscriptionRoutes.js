@@ -13,6 +13,9 @@ router.get('/status', authenticateToken, subscriptionController.checkStatus);
 // Midtrans webhook notifications (No auth token needed, verified via signature/payload)
 router.post('/webhook', subscriptionController.handleWebhook);
 
+// Verification route to sync with Midtrans directly (needed for localhost development)
+router.post('/verify/:orderId', authenticateToken, subscriptionController.verifyPaymentStatus);
+
 // Simulation route for offline local testing
 router.post('/simulate-payment', subscriptionController.simulatePayment);
 

@@ -20,7 +20,8 @@ export default function SubscriptionPage() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   
-  // Checkout tracking states for simulation
+  // Checkout tracking states for simulation and input nominal
+  const [inputAmount, setInputAmount] = useState(10000);
   const [currentOrder, setCurrentOrder] = useState(null);
   const [simulating, setSimulating] = useState(false);
 
@@ -35,8 +36,12 @@ export default function SubscriptionPage() {
 
     try {
       // 1. Contact backend to create payment session
-      const res = await api.createSubscription();
-      setCurrentOrder(res);
+      const res = await api.createSubscription(inputAmount);
+      const orderData = {
+        ...res,
+        amount: inputAmount
+      };
+      setCurrentOrder(orderData);
 
       // 2. Check if this is a real Midtrans payment or a mock payment
       if (res.isMockPayment) {
@@ -48,9 +53,15 @@ export default function SubscriptionPage() {
           window.snap.pay(res.snapToken, {
             onSuccess: async (result) => {
               console.log('Midtrans payment success:', result);
-              setSuccess('Pembayaran berhasil diproses! Mengaktifkan premium...');
-              await refreshPremiumStatus();
-              setCurrentOrder(null);
+              setSuccess('Pembayaran berhasil! Memverifikasi status...');
+              try {
+                await api.verifySubscription(res.orderId);
+                setSuccess('Pembayaran berhasil diproses! Status Premium Aktif.');
+                await refreshPremiumStatus();
+                setCurrentOrder(null);
+              } catch (err) {
+                setError('Gagal memverifikasi status pembayaran secara otomatis. Silakan klik tombol "Cek Status Pembayaran" di bawah.');
+              }
               setLoading(false);
             },
             onPending: (result) => {
@@ -73,7 +84,7 @@ export default function SubscriptionPage() {
           setError('Gagal memuat pustaka pembayaran Midtrans Snap. Mengaktifkan simulator...');
           // Auto-fallback to simulator panel
           setCurrentOrder({
-            ...res,
+            ...orderData,
             isMockPayment: true
           });
           setLoading(false);
@@ -165,49 +176,109 @@ export default function SubscriptionPage() {
               )}
             </div>
 
-            {/* Visual webhook simulator panel */}
-            {currentOrder?.isMockPayment && (
-              <div className="glass-card p-6 border-amber-500/30 bg-amber-500/5 space-y-4 animate-fade-in">
+            {/* Visual webhook simulator or manual status verification panel */}
+            {currentOrder && (
+              <div className={`glass-card p-6 border-indigo-500/30 ${currentOrder.isMockPayment ? 'border-amber-500/30 bg-amber-500/5' : 'bg-indigo-500/5'} space-y-4 animate-fade-in`}>
                 <div className="flex items-start gap-3">
-                  <HelpCircle className="h-5 w-5 text-amber-400 shrink-0 mt-0.5" />
+                  {currentOrder.isMockPayment ? (
+                    <HelpCircle className="h-5 w-5 text-amber-400 shrink-0 mt-0.5" />
+                  ) : (
+                    <Info className="h-5 w-5 text-indigo-400 shrink-0 mt-0.5" />
+                  )}
                   <div>
-                    <h4 className="font-bold text-white text-sm">Simulator Pembayaran Midtrans Sandbox</h4>
+                    <h4 className="font-bold text-white text-sm">
+                      {currentOrder.isMockPayment ? 'Simulator Pembayaran Midtrans Sandbox' : 'Menunggu Pembayaran Midtrans'}
+                    </h4>
                     <p className="text-xs text-gray-300 mt-1 leading-relaxed">
-                      Karena server menggunakan kunci mockup, sistem mendeteksi simulasi transaksi offline. Anda dapat menyelesaikan proses pembayaran secara instan di sini untuk melihat aliran webhook.
+                      {currentOrder.isMockPayment 
+                        ? 'Karena server menggunakan kunci mockup, sistem mendeteksi simulasi transaksi offline. Anda dapat menyelesaikan proses pembayaran secara instan di sini untuk melihat aliran webhook.'
+                        : 'Pembayaran Anda telah dibuat di Midtrans Sandbox. Silakan selesaikan pembayaran Anda menggunakan metode Transfer Bank yang Anda pilih.'}
                     </p>
                   </div>
                 </div>
 
                 <div className="bg-[#090d16] p-4 rounded-xl border border-slate-800 space-y-2.5">
                   <div className="flex justify-between text-xs text-gray-400">
-                    <span>ID Transaksi:</span>
+                    <span>ID Transaksi (Order ID):</span>
                     <span className="font-mono text-indigo-400 font-semibold">{currentOrder.orderId}</span>
                   </div>
                   <div className="flex justify-between text-xs text-gray-400">
                     <span>Nominal:</span>
-                    <span className="font-bold text-white">Rp 10.000</span>
+                    <span className="font-bold text-white">{formatCurrency(currentOrder.amount || inputAmount)}</span>
                   </div>
-                  <div className="flex justify-between text-xs text-gray-400">
-                    <span>Token Snap:</span>
-                    <span className="font-mono text-gray-400 truncate max-w-[200px]">{currentOrder.snapToken}</span>
-                  </div>
+                  {!currentOrder.isMockPayment && (
+                    <div className="rounded-lg bg-slate-800/40 p-3 text-[11px] text-gray-400 space-y-2 border border-slate-700/30">
+                      <p className="font-semibold text-white">Langkah Simulasi Pembayaran:</p>
+                      <ol className="list-decimal list-inside space-y-1">
+                        <li>Buka popup Midtrans Snap dan pilih salah satu bank untuk Transfer.</li>
+                        <li>Salin Nomor Virtual Account yang diberikan.</li>
+                        <li>Buka <a href="https://simulator.sandbox.midtrans.com" target="_blank" rel="noopener noreferrer" className="text-indigo-400 hover:underline font-semibold">Simulator Sandbox Midtrans</a>.</li>
+                        <li>Pilih **Virtual Account**, masukkan nomor VA Anda, lalu bayar.</li>
+                        <li>Setelah sukses di simulator, kembali ke halaman ini lalu tekan tombol **"Cek Status Pembayaran"** di bawah.</li>
+                      </ol>
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex gap-3">
-                  <button
-                    onClick={() => handleSimulatePayment(true)}
-                    disabled={simulating}
-                    className="flex-1 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-black font-extrabold text-xs rounded-xl transition-all shadow-md cursor-pointer disabled:opacity-50"
-                  >
-                    {simulating ? 'Memproses...' : 'Setujui Pembayaran (Settlement)'}
-                  </button>
-                  <button
-                    onClick={() => handleSimulatePayment(false)}
-                    disabled={simulating}
-                    className="py-2.5 px-4 bg-zinc-800 hover:bg-zinc-700 text-gray-300 font-bold text-xs rounded-xl transition-all border border-zinc-700 cursor-pointer disabled:opacity-50"
-                  >
-                    Gagalkan
-                  </button>
+                  {currentOrder.isMockPayment ? (
+                    <>
+                      <button
+                        onClick={() => handleSimulatePayment(true)}
+                        disabled={simulating}
+                        className="flex-1 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-black font-extrabold text-xs rounded-xl transition-all shadow-md cursor-pointer disabled:opacity-50"
+                      >
+                        {simulating ? 'Memproses...' : 'Setujui Pembayaran (Settlement)'}
+                      </button>
+                      <button
+                        onClick={() => handleSimulatePayment(false)}
+                        disabled={simulating}
+                        className="py-2.5 px-4 bg-zinc-800 hover:bg-zinc-700 text-gray-300 font-bold text-xs rounded-xl transition-all border border-zinc-700 cursor-pointer disabled:opacity-50"
+                      >
+                        Gagalkan
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        onClick={async () => {
+                          setSimulating(true);
+                          setError('');
+                          setSuccess('');
+                          try {
+                            const verifyRes = await api.verifySubscription(currentOrder.orderId);
+                            if (verifyRes.isPremium) {
+                              setSuccess('Verifikasi Berhasil! Paket Premium Anda telah diaktifkan.');
+                              await refreshPremiumStatus();
+                              setCurrentOrder(null);
+                            } else {
+                              setError('Pembayaran belum terdeteksi. Silakan selesaikan pembayaran Anda di simulator Sandbox Midtrans terlebih dahulu.');
+                            }
+                          } catch (err) {
+                            setError(err.message || 'Gagal memverifikasi status pembayaran.');
+                          } finally {
+                            setSimulating(false);
+                          }
+                        }}
+                        disabled={simulating}
+                        className="flex-1 py-2.5 bg-indigo-500 hover:bg-indigo-600 text-white font-extrabold text-xs rounded-xl transition-all shadow-md cursor-pointer disabled:opacity-50"
+                      >
+                        {simulating ? 'Memverifikasi...' : 'Cek Status Pembayaran'}
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (window.snap && currentOrder.snapToken) {
+                            window.snap.pay(currentOrder.snapToken);
+                          } else {
+                            setError('Gagal membuka popup. Pustaka Midtrans Snap tidak tersedia.');
+                          }
+                        }}
+                        className="py-2.5 px-4 bg-zinc-800 hover:bg-zinc-700 text-gray-300 font-bold text-xs rounded-xl transition-all border border-zinc-700 cursor-pointer"
+                      >
+                        Buka Ulang Popup
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             )}
@@ -267,14 +338,32 @@ export default function SubscriptionPage() {
                 </li>
               </ul>
 
+              {/* Input Nominal Kustom */}
+              <div className="space-y-2 pt-4 border-t border-slate-800/80">
+                <label className="text-xs text-gray-400 font-semibold block">Nominal Pembayaran (IDR)</label>
+                <div className="relative">
+                  <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 font-bold text-xs">Rp</span>
+                  <input
+                    type="number"
+                    value={inputAmount}
+                    onChange={(e) => setInputAmount(Math.max(0, parseInt(e.target.value) || 0))}
+                    disabled={loading || user?.role === 'lecturer' || user?.role === 'admin'}
+                    className="w-full bg-slate-900 border border-slate-700/60 rounded-xl py-2.5 pl-10 pr-4 text-white font-bold text-xs focus:outline-none focus:border-indigo-500/80 transition-all"
+                    placeholder="10000"
+                    min="1000"
+                  />
+                </div>
+                <p className="text-[10px] text-gray-500">Minimal pembayaran Rp 1.000 (Transfer Bank / Virtual Account)</p>
+              </div>
+
               {/* Checkout CTA */}
               <button
                 onClick={handleCheckout}
                 disabled={loading || user?.role === 'lecturer' || user?.role === 'admin'}
-                className="w-full mt-6 py-3 rounded-xl text-xs font-bold text-white gradient-btn flex items-center justify-center gap-2 shadow-lg disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                className="w-full mt-2 py-3 rounded-xl text-xs font-bold text-white gradient-btn flex items-center justify-center gap-2 shadow-lg disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
               >
                 <CreditCard className="h-4 w-4" /> 
-                {loading ? 'Menghubungkan Midtrans...' : 'Langganan via Midtrans'}
+                {loading ? 'Menghubungkan...' : 'Langganan Premium'}
               </button>
               
               <div className="text-[10px] text-gray-500 text-center leading-relaxed">

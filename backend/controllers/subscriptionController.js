@@ -19,7 +19,7 @@ const getSnapInstance = () => {
 const createSubscription = async (req, res) => {
   const userId = req.user.id;
   const username = req.user.username;
-  const amount = 10000; // Weekly subscription is 10k IDR
+  const amount = req.body.amount || 10000; // Menggunakan nominal kustom dari request body
 
   try {
     // 1. Check if user is already premium
@@ -45,12 +45,14 @@ const createSubscription = async (req, res) => {
         id: 'premium_weekly',
         price: amount,
         quantity: 1,
-        name: 'UMKM Insight Premium - 1 Minggu'
+        name: 'UMKM Insight Premium - Berlangganan'
       }],
       customer_details: {
         first_name: username,
         email: `${username}@example.com`
-      }
+      },
+      // Membatasi pilihan pembayaran hanya melalui Transfer Bank (Virtual Account)
+      enabled_payments: ["bank_transfer"]
     };
 
     let snapToken = '';
@@ -223,9 +225,97 @@ const checkStatus = async (req, res) => {
   }
 };
 
+// POST /api/subscription/verify/:orderId
+const verifyPaymentStatus = async (req, res) => {
+  const { orderId } = req.params;
+  const isMockKey = !process.env.MIDTRANS_SERVER_KEY || process.env.MIDTRANS_SERVER_KEY.includes('mock-key');
+
+  try {
+    const subscription = await db.get('SELECT * FROM subscriptions WHERE id = ?', [orderId]);
+    if (!subscription) {
+      res.locals.errorMessage = 'Subscription order not found';
+      return res.status(404).json({ error: res.locals.errorMessage });
+    }
+
+    let transactionStatus = 'pending';
+    let fraudStatus = 'accept';
+
+    if (isMockKey) {
+      transactionStatus = subscription.status === 'settlement' ? 'settlement' : 'pending';
+    } else {
+      // Call Midtrans API directly to check latest status
+      const serverKey = process.env.MIDTRANS_SERVER_KEY;
+      const authHeader = Buffer.from(`${serverKey}:`).toString('base64');
+      const axios = require('axios');
+      
+      const response = await axios.get(`https://api.sandbox.midtrans.com/v2/${orderId}/status`, {
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          'Authorization': `Basic ${authHeader}`
+        }
+      });
+
+      transactionStatus = response.data.transaction_status;
+      fraudStatus = response.data.fraud_status;
+    }
+
+    let finalStatus = subscription.status;
+
+    if (transactionStatus === 'capture') {
+      if (fraudStatus === 'challenge') {
+        finalStatus = 'pending';
+      } else if (fraudStatus === 'accept') {
+        finalStatus = 'settlement';
+      }
+    } else if (transactionStatus === 'settlement') {
+      finalStatus = 'settlement';
+    } else if (transactionStatus === 'cancel' || transactionStatus === 'deny') {
+      finalStatus = 'cancel';
+    } else if (transactionStatus === 'expire') {
+      finalStatus = 'expire';
+    } else if (transactionStatus === 'pending') {
+      finalStatus = 'pending';
+    }
+
+    if (finalStatus !== subscription.status) {
+      await db.run(
+        `UPDATE subscriptions SET status = ?, updated_at = datetime('now', 'localtime') WHERE id = ?`,
+        [finalStatus, orderId]
+      );
+
+      if (finalStatus === 'settlement') {
+        const durationDays = 7;
+        const now = new Date();
+        const premiumUntilDate = new Date();
+        premiumUntilDate.setDate(now.getDate() + durationDays);
+        const premiumUntilStr = premiumUntilDate.toISOString().replace('T', ' ').substring(0, 19);
+
+        await db.run(
+          `UPDATE users SET is_premium = 1, premium_until = ? WHERE id = ?`,
+          [premiumUntilStr, subscription.user_id]
+        );
+        console.log(`Premium activated for User ID ${subscription.user_id} until ${premiumUntilStr} via verify endpoint`);
+      }
+    }
+
+    return res.json({
+      message: 'Verification successful',
+      orderId,
+      status: finalStatus,
+      isPremium: finalStatus === 'settlement'
+    });
+  } catch (error) {
+    console.error('Payment verification error:', error.message || error);
+    res.locals.errorMessage = 'Failed to verify payment status';
+    return res.status(500).json({ error: res.locals.errorMessage });
+  }
+};
+
 module.exports = {
   createSubscription,
   handleWebhook,
   simulatePayment,
-  checkStatus
+  checkStatus,
+  verifyPaymentStatus
 };

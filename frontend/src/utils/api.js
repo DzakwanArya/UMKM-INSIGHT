@@ -83,11 +83,11 @@ export const api = {
   },
 
   // Subscriptions
-  createSubscription: async () => {
+  createSubscription: async (amount = 10000) => {
     const res = await fetch(`${API_BASE}/subscription/create`, {
       method: 'POST',
       headers: getHeaders(),
-      body: JSON.stringify({ amount: 10000 })
+      body: JSON.stringify({ amount: Number(amount) })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed to create subscription checkout');
@@ -111,6 +111,16 @@ export const api = {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Simulation failed');
+    return data;
+  },
+
+  verifySubscription: async (orderId) => {
+    const res = await fetch(`${API_BASE}/subscription/verify/${orderId}`, {
+      method: 'POST',
+      headers: getHeaders()
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to verify subscription status');
     return data;
   }
 };

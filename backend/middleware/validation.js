@@ -27,9 +27,9 @@ const validateAuth = (req, res, next) => {
 const validateSubscription = (req, res, next) => {
   const { amount } = req.body;
 
-  // The weekly fee is 10000 IDR
-  if (amount !== undefined && (typeof amount !== 'number' || amount !== 10000)) {
-    res.locals.errorMessage = 'Subscription amount must be exactly 10,000 IDR';
+  // Validasi agar nominal yang dimasukkan berupa angka positif valid (minimal Rp 1.000)
+  if (amount === undefined || typeof amount !== 'number' || amount < 1000) {
+    res.locals.errorMessage = 'Subscription amount must be a number and at least 1,000 IDR';
     return res.status(400).json({ error: res.locals.errorMessage });
   }
 
