@@ -1,0 +1,127 @@
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+<meta charset="utf-8">
+<title>Bagian 7 dan 8 Laporan</title>
+<style>
+  body { font-family: 'Times New Roman', Times, serif; font-size: 12pt; }
+  h3 { font-size: 14pt; }
+  table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
+  th, td { border: 1px solid black; padding: 8px; text-align: left; }
+  th { background-color: #f2f2f2; }
+  pre { background-color: #f8f8f8; padding: 10px; border: 1px solid #ddd; font-family: 'Courier New', Courier, monospace; font-size: 10pt; white-space: pre-wrap;}
+</style>
+</head>
+<body>
+
+<h3>7. Daftar Temuan Masalah Kode</h3>
+<table>
+  <thead>
+    <tr>
+      <th>No</th>
+      <th>File/Method</th>
+      <th>Masalah Kode</th>
+      <th>Prinsip Terkait</th>
+      <th>Dampak Negatif</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td style="text-align: center;">1</td>
+      <td><code>subscriptionController.js</code> (Method: <code>createSubscription</code> &amp; <code>handleWebhook</code>)</td>
+      <td><strong>Query Database Bercampur di Controller:</strong> Menulis query SQL langsung seperti <code>await db.run('INSERT INTO subscriptions...')</code> di dalam <em>controller</em>.</td>
+      <td><strong>SRP</strong> (<em>Single Responsibility Principle</em>) &amp; <strong>MVC</strong></td>
+      <td><em>Controller</em> menjadi bertugas ganda (mengurus HTTP sekaligus <em>Database Repository</em>). Sulit dilakukan <em>Unit Testing</em> dan jika skema tabel berubah, modifikasi harus dicari satu per satu.</td>
+    </tr>
+    <tr>
+      <td style="text-align: center;">2</td>
+      <td><code>analyticsController.js</code> (Method: <code>getDashboardData</code> &amp; <code>getSalesAnalysis</code>)</td>
+      <td><strong>Controller Terlalu Gemuk (Fat Controller):</strong> Melakukan agregasi data kompleks (menghitung profit, pajak, admin) secara manual menggunakan <em>looping</em>.</td>
+      <td><strong>SRP</strong> &amp; <strong>Clean Code</strong></td>
+      <td>Kode panjang dan sulit dibaca. Kinerja lambat jika data ribuan. Seharusnya perhitungan diserahkan kepada fungsi database (<code>SUM</code>, <code>GROUP BY</code>) atau dipindah ke <em>Service Layer</em>.</td>
+    </tr>
+    <tr>
+      <td style="text-align: center;">3</td>
+      <td><code>subscriptionController.js</code> (Method: <code>handleWebhook</code> &amp; <code>verifyPaymentStatus</code>)</td>
+      <td><strong>Kode Duplikat (Duplicated Code):</strong> Logika penentuan status Midtrans ditulis berulang-ulang dengan blok kode yang identik di dua fungsi berbeda.</td>
+      <td><strong>DRY</strong> (<em>Don't Repeat Yourself</em>)</td>
+      <td>Peluang <em>bug</em> tinggi. Jika ada perubahan logika status pembayaran dari Midtrans, <em>developer</em> harus memperbarui kode di banyak tempat.</td>
+    </tr>
+    <tr>
+      <td style="text-align: center;">4</td>
+      <td><code>authController.js</code> (Method: <code>register</code>)</td>
+      <td><strong>Validasi Tidak Terpusat:</strong> Mengecek validitas peran (role) pengguna secara manual langsung di tengah fungsi registrasi.</td>
+      <td><strong>Separation of Concerns</strong> &amp; <strong>SRP</strong></td>
+      <td>Logika validasi <em>request</em> bercampur dengan logika bisnis inti. Sebaiknya menggunakan <em>Middleware Validator</em> khusus.</td>
+    </tr>
+    <tr>
+      <td style="text-align: center;">5</td>
+      <td><code>subscriptionController.js</code> (Method: <code>handleWebhook</code>)</td>
+      <td><strong>Hardcode / Magic Numbers:</strong> Menggunakan angka statis <code>const durationDays = 7;</code> untuk durasi premium.</td>
+      <td><strong>OCP</strong> (<em>Open/Closed Principle</em>)</td>
+      <td>Aplikasi menjadi tidak fleksibel. Jika perusahaan ingin merilis paket langganan 30 hari, fungsi inti ini terpaksa harus dirubah lagi.</td>
+    </tr>
+  </tbody>
+</table>
+
+<br>
+
+<h3>8. Analisis Perubahan (Before-After)</h3>
+
+<p><strong>Nama Temuan:</strong> Kode Duplikat (Duplicated Code) pada Logika Penentuan Status Pembayaran</p>
+<p><strong>Lokasi Kode:</strong> <code>backend/controllers/subscriptionController.js</code> (Method: <code>handleWebhook</code> dan <code>verifyPaymentStatus</code>)</p>
+
+<p><strong>Kode Sebelum:</strong></p>
+<pre>
+// Ditemukan berulang secara identik di fungsi handleWebhook dan verifyPaymentStatus
+let finalStatus = 'pending';
+
+if (transactionStatus === 'capture') {
+  if (fraudStatus === 'challenge') {
+    finalStatus = 'pending';
+  } else if (fraudStatus === 'accept') {
+    finalStatus = 'settlement';
+  }
+} else if (transactionStatus === 'settlement') {
+  finalStatus = 'settlement';
+} else if (transactionStatus === 'cancel' || transactionStatus === 'deny') {
+  finalStatus = 'cancel';
+} else if (transactionStatus === 'expire') {
+  finalStatus = 'expire';
+}
+</pre>
+
+<p><strong>Masalah:</strong><br>
+Kode di atas merupakan blok percabangan kompleks (<em>nested if-else</em>) untuk menerjemahkan status transaksi Midtrans ke status lokal database. Masalah utamanya adalah blok kode ini di-salin-tempel (<em>copy-paste</em>) secara persis di dua metode <em>controller</em> yang berbeda. Secara teknis, ini menghasilkan redundansi yang sangat tinggi.</p>
+
+<p><strong>Prinsip yang Dilanggar:</strong><br>
+- <strong>DRY (Don't Repeat Yourself):</strong> Setiap bagian kecil dari pengetahuan perangkat lunak harus memiliki representasi tunggal dan otoritatif di dalam sistem.<br>
+- <strong>High Cohesion:</strong> Kode tidak menyatu secara padu; <em>controller</em> HTTP justru berisi logika <em>mapping</em> data eksternal.</p>
+
+<p><strong>Strategi Refactoring:</strong><br>
+Melakukan ekstraksi (<em>Extract Method</em>) terhadap blok kode percabangan tersebut menjadi sebuah fungsi utilitas (<em>helper function</em>) yang berdiri sendiri. Fungsi tunggal ini kemudian dipanggil oleh kedua <em>controller</em>, sehingga hanya ada satu tempat terpusat untuk memodifikasi logika status.</p>
+
+<p><strong>Kode Sesudah:</strong></p>
+<pre>
+// 1. Dibuat Helper Function di luar Controller
+const mapMidtransStatus = (transactionStatus, fraudStatus, currentStatus = 'pending') => {
+  if (transactionStatus === 'capture') {
+    return fraudStatus === 'challenge' ? 'pending' : 'settlement';
+  }
+  if (transactionStatus === 'settlement') return 'settlement';
+  if (['cancel', 'deny'].includes(transactionStatus)) return 'cancel';
+  if (transactionStatus === 'expire') return 'expire';
+  
+  return currentStatus; // Default fallback
+};
+
+// 2. Pemanggilan di dalam handleWebhook &amp; verifyPaymentStatus
+const finalStatus = mapMidtransStatus(transactionStatus, fraudStatus, subscription.status);
+</pre>
+
+<p><strong>Dampak Perbaikan:</strong><br>
+1. <strong>Keterbacaan (Readability):</strong> Ukuran <em>controller</em> menjadi jauh lebih ringkas (<em>thin controller</em>). Ekstraksi logika ke fungsi terpisah dengan penamaan yang deskriptif membuat tujuan kode dapat dipahami dalam sekali lihat.<br>
+2. <strong>Kemudahan Pemeliharaan (Maintainability):</strong> Jika dokumentasi Midtrans kelak menambahkan status baru, pengembang hanya perlu menambahkannya di satu fungsi pembantu, menghindari potensi <em>bug</em> di masa depan.<br>
+3. <strong>Pengujian (Testability):</strong> Fungsi terisolasi kini bisa diuji menggunakan <em>Unit Testing</em> secara mandiri tanpa perlu membuat tiruan (<em>mocking</em>) HTTP Request/Response.</p>
+
+</body>
+</html>
