@@ -9,6 +9,7 @@ const requestLogger = require('./middleware/logger');
 const authRoutes = require('./routes/authRoutes');
 const analyticsRoutes = require('./routes/analyticsRoutes');
 const subscriptionRoutes = require('./routes/subscriptionRoutes');
+const bankRoutes = require('./routes/bankRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -34,6 +35,7 @@ app.use(requestLogger);
 app.use('/api/auth', authRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/subscription', subscriptionRoutes);
+app.use('/api/bank', bankRoutes);
 
 // Base Route
 app.get('/', (req, res) => {

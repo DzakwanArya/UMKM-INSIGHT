@@ -4,6 +4,9 @@ const subscriptionController = require('../controllers/subscriptionController');
 const { authenticateToken } = require('../middleware/auth');
 const { validateSubscription } = require('../middleware/validation');
 
+// Fetch available subscription plans for the frontend
+router.get('/plans', subscriptionController.getSubscriptionPlans);
+
 // Initialize a payment (Returns Midtrans Snap Token)
 router.post('/create', authenticateToken, validateSubscription, subscriptionController.createSubscription);
 

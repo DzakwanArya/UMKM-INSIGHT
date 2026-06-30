@@ -1,8 +1,34 @@
 const midtransClient = require('midtrans-client');
 const db = require('../config/db');
 
+// Subscription Plans configuration
+const SUBSCRIPTION_PLANS = {
+  '7_days': { name: 'Premium 7 Hari', durationDays: 7, amount: 10000 },
+  '1_month': { name: 'Premium 1 Bulan', durationDays: 30, amount: 30000 },
+  '3_months': { name: 'Premium 3 Bulan', durationDays: 90, amount: 80000 },
+  '1_year': { name: 'Premium 1 Tahun', durationDays: 365, amount: 250000 }
+};
+
+const getSubscriptionPlans = async (req, res) => {
+  try {
+    const plans = Object.entries(SUBSCRIPTION_PLANS).map(([id, plan]) => ({
+      id,
+      name: plan.name,
+      durationDays: plan.durationDays,
+      amount: plan.amount
+    }));
+
+    return res.json({
+      success: true,
+      plans
+    });
+  } catch (error) {
+    console.error('Error fetching subscription plans:', error);
+    return res.status(500).json({ error: 'Failed to fetch subscription plans' });
+  }
+};
+
 // Initialize Midtrans Snap client
-// Uses environment variables with default sandboxes as fallbacks
 const getSnapInstance = () => {
   const serverKey = process.env.MIDTRANS_SERVER_KEY || 'SB-Mid-server-umkm-insight-mock-key';
   const clientKey = process.env.MIDTRANS_CLIENT_KEY || 'SB-Mid-client-umkm-insight-mock-key';
@@ -19,7 +45,11 @@ const getSnapInstance = () => {
 const createSubscription = async (req, res) => {
   const userId = req.user.id;
   const username = req.user.username;
-  const amount = req.body.amount || 10000; // Menggunakan nominal kustom dari request body
+  
+  // Extract planId or fall back to amount mapping
+  const planId = req.body.planId || (req.body.amount === 30000 ? '1_month' : req.body.amount === 80000 ? '3_months' : req.body.amount === 250000 ? '1_year' : '7_days');
+  const plan = SUBSCRIPTION_PLANS[planId] || { name: 'Premium Custom', durationDays: 7, amount: req.body.amount || 10000 };
+  const amount = req.body.amount || plan.amount;
 
   try {
     // 1. Check if user is already premium
@@ -42,10 +72,10 @@ const createSubscription = async (req, res) => {
         gross_amount: amount
       },
       item_details: [{
-        id: 'premium_weekly',
+        id: planId,
         price: amount,
         quantity: 1,
-        name: 'UMKM Insight Premium - Berlangganan'
+        name: `UMKM Insight Premium - ${plan.name || 'Berlangganan'}`
       }],
       customer_details: {
         first_name: username,
@@ -85,9 +115,9 @@ const createSubscription = async (req, res) => {
 
     // 3. Save subscription to database
     await db.run(
-      `INSERT INTO subscriptions (id, user_id, amount, status, snap_token, created_at, updated_at) 
-       VALUES (?, ?, ?, 'pending', ?, datetime('now', 'localtime'), datetime('now', 'localtime'))`,
-      [orderId, userId, amount, snapToken]
+      `INSERT INTO subscriptions (id, user_id, amount, status, snap_token, plan_type, duration_days, created_at, updated_at) 
+       VALUES (?, ?, ?, 'pending', ?, ?, ?, datetime('now', 'localtime'), datetime('now', 'localtime'))`,
+      [orderId, userId, amount, snapToken, planId, plan.durationDays]
     );
 
     return res.status(201).json({
@@ -162,17 +192,36 @@ const handleWebhook = async (req, res) => {
 
     // If payment was settled, activate/extend the user's premium status
     if (finalStatus === 'settlement') {
-      const durationDays = 7; // Weekly subscription
-      const now = new Date();
-      const premiumUntilDate = new Date();
-      premiumUntilDate.setDate(now.getDate() + durationDays);
+      const durationDays = subscription.duration_days || 7;
+      const user = await db.get('SELECT is_premium, premium_until FROM users WHERE id = ?', [subscription.user_id]);
+      let baseDate = new Date();
+      if (user && user.is_premium === 1 && user.premium_until) {
+        const currentExpiry = new Date(user.premium_until);
+        if (currentExpiry > baseDate) {
+          baseDate = currentExpiry;
+        }
+      }
+      const premiumUntilDate = new Date(baseDate);
+      premiumUntilDate.setDate(baseDate.getDate() + durationDays);
       const premiumUntilStr = premiumUntilDate.toISOString().replace('T', ' ').substring(0, 19);
 
       await db.run(
         `UPDATE users SET is_premium = 1, premium_until = ? WHERE id = ?`,
         [premiumUntilStr, subscription.user_id]
       );
-      console.log(`Premium activated for User ID ${subscription.user_id} until ${premiumUntilStr}`);
+      console.log(`Premium activated for User ID ${subscription.user_id} until ${premiumUntilStr} (Duration: ${durationDays} days)`);
+
+      // Record transaction to local bank database
+      const existingBankTx = await db.get('SELECT 1 FROM bank_transactions WHERE subscription_id = ?', [orderId]);
+      if (!existingBankTx) {
+        const bankTxId = `BANK-${orderId.substring(4)}`;
+        await db.run(
+          `INSERT INTO bank_transactions (id, subscription_id, user_id, amount, plan_type, status, created_at)
+           VALUES (?, ?, ?, ?, ?, 'success', datetime('now', 'localtime'))`,
+          [bankTxId, orderId, subscription.user_id, subscription.amount, subscription.plan_type || '7_days']
+        );
+        console.log(`Bank transaction recorded: ${bankTxId} for amount ${subscription.amount}`);
+      }
     }
 
     return res.json({ message: 'Notification processed successfully', orderId, status: finalStatus });
@@ -285,17 +334,36 @@ const verifyPaymentStatus = async (req, res) => {
       );
 
       if (finalStatus === 'settlement') {
-        const durationDays = 7;
-        const now = new Date();
-        const premiumUntilDate = new Date();
-        premiumUntilDate.setDate(now.getDate() + durationDays);
+        const durationDays = subscription.duration_days || 7;
+        const user = await db.get('SELECT is_premium, premium_until FROM users WHERE id = ?', [subscription.user_id]);
+        let baseDate = new Date();
+        if (user && user.is_premium === 1 && user.premium_until) {
+          const currentExpiry = new Date(user.premium_until);
+          if (currentExpiry > baseDate) {
+            baseDate = currentExpiry;
+          }
+        }
+        const premiumUntilDate = new Date(baseDate);
+        premiumUntilDate.setDate(baseDate.getDate() + durationDays);
         const premiumUntilStr = premiumUntilDate.toISOString().replace('T', ' ').substring(0, 19);
 
         await db.run(
           `UPDATE users SET is_premium = 1, premium_until = ? WHERE id = ?`,
           [premiumUntilStr, subscription.user_id]
         );
-        console.log(`Premium activated for User ID ${subscription.user_id} until ${premiumUntilStr} via verify endpoint`);
+        console.log(`Premium activated for User ID ${subscription.user_id} until ${premiumUntilStr} via verify endpoint (Duration: ${durationDays} days)`);
+
+        // Record transaction to local bank database
+        const existingBankTx = await db.get('SELECT 1 FROM bank_transactions WHERE subscription_id = ?', [orderId]);
+        if (!existingBankTx) {
+          const bankTxId = `BANK-${orderId.substring(4)}`;
+          await db.run(
+            `INSERT INTO bank_transactions (id, subscription_id, user_id, amount, plan_type, status, created_at)
+             VALUES (?, ?, ?, ?, ?, 'success', datetime('now', 'localtime'))`,
+            [bankTxId, orderId, subscription.user_id, subscription.amount, subscription.plan_type || '7_days']
+          );
+          console.log(`Bank transaction recorded: ${bankTxId} via verify endpoint`);
+        }
       }
     }
 
@@ -317,5 +385,6 @@ module.exports = {
   handleWebhook,
   simulatePayment,
   checkStatus,
-  verifyPaymentStatus
+  verifyPaymentStatus,
+  getSubscriptionPlans
 };

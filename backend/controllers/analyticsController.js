@@ -1,4 +1,5 @@
 const axios = require('axios');
+const db = require('../config/db');
 
 // Mock data generator for the UMKM ecosystem when SmartBank/Gateway is not available or USE_MOCK_LEDGER is true
 const generateMockLedger = () => {
@@ -18,30 +19,27 @@ const generateMockLedger = () => {
 
   const now = new Date();
   
-  // Create transactions for the past 30 days
   for (let i = 29; i >= 0; i--) {
     const currentDate = new Date(now);
     currentDate.setDate(now.getDate() - i);
     const dateStr = currentDate.toISOString().split('T')[0];
 
-    // Generate 3 to 8 transactions per day
     const dailyTxCount = Math.floor(Math.random() * 6) + 3;
 
     for (let j = 0; j < dailyTxCount; j++) {
       const umkm = umkms[Math.floor(Math.random() * umkms.length)];
-      const txType = Math.random() > 0.3 ? 'inflow' : 'outflow'; // 70% sales (inflow), 30% suppliers (outflow)
+      const txType = Math.random() > 0.3 ? 'inflow' : 'outflow';
       
       const txId = `TX-${dateStr.replace(/-/g, '')}-${i}${j}`;
-      const hour = Math.floor(Math.random() * 12) + 8; // 08:00 to 20:00
+      const hour = Math.floor(Math.random() * 12) + 8;
       const timestamp = `${dateStr} ${hour.toString().padStart(2, '0')}:${Math.floor(Math.random() * 60).toString().padStart(2, '0')}:00`;
 
       if (txType === 'inflow') {
-        // POS or Marketplace sales
         const isMarketplace = Math.random() > 0.4;
         const sourceApp = isMarketplace ? 'Marketplace' : 'POS';
-        const amount = Math.floor(Math.random() * 150000) + 20000; // 20k to 170k IDR
-        const fee = isMarketplace ? 2000 : 1000; // Marketplace has 2k fee, POS has 1k fee
-        const tax = Math.floor(amount * 0.1); // 10% tax
+        const amount = Math.floor(Math.random() * 150000) + 20000;
+        const fee = isMarketplace ? 2000 : 1000;
+        const tax = Math.floor(amount * 0.1);
 
         ledger.push({
           tx_id: txId,
@@ -62,10 +60,9 @@ const generateMockLedger = () => {
           }
         });
       } else {
-        // Supplier purchases (outflow)
         const supplier = suppliers[Math.floor(Math.random() * suppliers.length)];
-        const amount = Math.floor(Math.random() * 300000) + 50000; // 50k to 350k IDR
-        const tax = Math.floor(amount * 0.1); // 10% tax on materials
+        const amount = Math.floor(Math.random() * 300000) + 50000;
+        const tax = Math.floor(amount * 0.1);
 
         ledger.push({
           tx_id: txId,
@@ -74,7 +71,7 @@ const generateMockLedger = () => {
           from_user: umkm.id,
           to_user: supplier.id,
           amount,
-          fee: 0, // No platform fee on supplier purchase
+          fee: 0,
           tax,
           status: 'success',
           metadata: {
@@ -89,11 +86,10 @@ const generateMockLedger = () => {
     }
   }
 
-  // Sort by date descending
   return ledger.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 };
 
-// Fetch transactions helper
+// Fetch transactions helper from external source
 const fetchLedgerData = async () => {
   if (process.env.USE_MOCK_LEDGER === 'true') {
     return generateMockLedger();
@@ -101,7 +97,7 @@ const fetchLedgerData = async () => {
 
   try {
     const response = await axios.get(`${process.env.GATEWAY_URL || 'http://localhost:3000'}/smartbank/ledger`, {
-      timeout: 3000 // 3 seconds timeout
+      timeout: 3000
     });
     return response.data;
   } catch (error) {
@@ -110,13 +106,168 @@ const fetchLedgerData = async () => {
   }
 };
 
+// Fetch unified transactions helper from local database tables
+const fetchLocalLedgerData = async () => {
+  try {
+    const marketplace = await db.all('SELECT * FROM marketplace_transactions');
+    const pos = await db.all('SELECT * FROM pos_transactions');
+    const supplier = await db.all('SELECT * FROM supplier_transactions');
+
+    const ledger = [];
+
+    marketplace.forEach(tx => {
+      ledger.push({
+        tx_id: tx.id,
+        timestamp: tx.timestamp,
+        from_app: 'Marketplace',
+        from_user: tx.from_user,
+        to_user: tx.to_user,
+        amount: tx.amount,
+        fee: tx.fee,
+        tax: tx.tax,
+        status: tx.status,
+        metadata: {
+          umkm_id: tx.umkm_id,
+          umkm_name: tx.umkm_name,
+          category: tx.category,
+          type: 'marketplace'
+        }
+      });
+    });
+
+    pos.forEach(tx => {
+      ledger.push({
+        tx_id: tx.id,
+        timestamp: tx.timestamp,
+        from_app: 'POS',
+        from_user: tx.from_user,
+        to_user: tx.to_user,
+        amount: tx.amount,
+        fee: tx.fee,
+        tax: tx.tax,
+        status: tx.status,
+        metadata: {
+          umkm_id: tx.umkm_id,
+          umkm_name: tx.umkm_name,
+          category: tx.category,
+          type: 'pos'
+        }
+      });
+    });
+
+    supplier.forEach(tx => {
+      ledger.push({
+        tx_id: tx.id,
+        timestamp: tx.timestamp,
+        from_app: 'SupplierHub',
+        from_user: tx.from_user,
+        to_user: tx.to_user,
+        amount: tx.amount,
+        fee: 0,
+        tax: tx.tax,
+        status: tx.status,
+        metadata: {
+          umkm_id: tx.umkm_id,
+          umkm_name: tx.umkm_name,
+          category: tx.category,
+          type: 'supplier',
+          supplier_name: tx.supplier_name
+        }
+      });
+    });
+
+    return ledger.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+  } catch (err) {
+    console.error('Error fetching local ledger data, falling back to mock generator:', err);
+    return generateMockLedger();
+  }
+};
+
+// POST /api/analytics/sync
+// Pulls latest data from external source and upserts it into the local database tables
+const syncExternalData = async (req, res) => {
+  try {
+    console.log('Syncing data from external UMKM ecosystem...');
+    const rawData = await fetchLedgerData();
+    
+    let newMarketplace = 0;
+    let newPos = 0;
+    let newSupplier = 0;
+
+    for (const tx of rawData) {
+      const txId = tx.tx_id;
+      const timestamp = tx.timestamp;
+      const fromUser = tx.from_user;
+      const toUser = tx.to_user;
+      const amount = Number(tx.amount) || 0;
+      const fee = Number(tx.fee) || 0;
+      const tax = Number(tx.tax) || 0;
+      const status = tx.status || 'success';
+      
+      const metadata = tx.metadata || {};
+      const umkmId = metadata.umkm_id || toUser;
+      const umkmName = metadata.umkm_name || '';
+      const category = metadata.category || 'Lainnya';
+      
+      if (tx.from_app === 'Marketplace') {
+        const exists = await db.get('SELECT 1 FROM marketplace_transactions WHERE id = ?', [txId]);
+        if (!exists) {
+          await db.run(
+            `INSERT INTO marketplace_transactions (id, timestamp, from_user, to_user, amount, fee, tax, status, umkm_id, umkm_name, category)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [txId, timestamp, fromUser, toUser, amount, fee, tax, status, umkmId, umkmName, category]
+          );
+          newMarketplace++;
+        }
+      } else if (tx.from_app === 'POS') {
+        const exists = await db.get('SELECT 1 FROM pos_transactions WHERE id = ?', [txId]);
+        if (!exists) {
+          await db.run(
+            `INSERT INTO pos_transactions (id, timestamp, from_user, to_user, amount, fee, tax, status, umkm_id, umkm_name, category)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [txId, timestamp, fromUser, toUser, amount, fee, tax, status, umkmId, umkmName, category]
+          );
+          newPos++;
+        }
+      } else if (tx.from_app === 'SupplierHub') {
+        const supplierName = metadata.supplier_name || toUser;
+        const buyerUmkmId = fromUser;
+        const exists = await db.get('SELECT 1 FROM supplier_transactions WHERE id = ?', [txId]);
+        if (!exists) {
+          await db.run(
+            `INSERT INTO supplier_transactions (id, timestamp, from_user, to_user, amount, tax, status, umkm_id, umkm_name, category, supplier_name)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [txId, timestamp, fromUser, toUser, amount, tax, status, buyerUmkmId, umkmName, category, supplierName]
+          );
+          newSupplier++;
+        }
+      }
+    }
+
+    console.log(`Sync completed: ${newMarketplace} Marketplace, ${newPos} POS, ${newSupplier} Supplier.`);
+    return res.json({
+      success: true,
+      message: 'Sync completed successfully',
+      summary: {
+        syncedMarketplace: newMarketplace,
+        syncedPos: newPos,
+        syncedSupplier: newSupplier,
+        totalSynced: newMarketplace + newPos + newSupplier
+      }
+    });
+  } catch (error) {
+    console.error('Error syncing external data:', error);
+    res.locals.errorMessage = 'Sync failed';
+    return res.status(500).json({ error: res.locals.errorMessage });
+  }
+};
+
 // GET /api/analytics/dashboard
 const getDashboardData = async (req, res) => {
   try {
-    const rawData = await fetchLedgerData();
+    const rawData = await fetchLocalLedgerData();
     const isPremiumUser = req.user.is_premium === 1 || req.user.role === 'lecturer' || req.user.role === 'admin';
 
-    // 1. Calculate General Aggregations
     let totalInflow = 0;
     let totalOutflow = 0;
     let totalFees = 0;
@@ -131,26 +282,22 @@ const getDashboardData = async (req, res) => {
       const f = Number(tx.fee) || 0;
       const t = Number(tx.tax) || 0;
 
-      // Check if this transaction is an inflow or outflow for UMKM
       const isOutflow = tx.from_app === 'SupplierHub';
       
       if (!isOutflow) {
-        // It's a sale (inflow)
         totalInflow += amt;
         totalFees += f;
         totalTaxes += t;
         totalInflowCount++;
       } else {
-        // It's a supply order (outflow)
         totalOutflow += amt;
-        totalTaxes += t; // Supplying taxes
+        totalTaxes += t;
         totalOutflowCount++;
       }
     });
 
     const netProfit = totalInflow - totalOutflow - totalFees - totalTaxes;
 
-    // 2. Aggregate Sales Trend (Past 7 days) for visual charts
     const salesTrendMap = {};
     const now = new Date();
     for (let i = 6; i >= 0; i--) {
@@ -176,11 +323,10 @@ const getDashboardData = async (req, res) => {
 
     const salesTrend = Object.values(salesTrendMap);
 
-    // 3. Category Split
     const categoryMap = {};
     rawData.forEach(tx => {
       const isOutflow = tx.from_app === 'SupplierHub';
-      if (isOutflow) return; // Category splits are only for sales
+      if (isOutflow) return;
 
       const category = (tx.metadata && tx.metadata.category) || 'Lainnya';
       const amt = Number(tx.amount) || 0;
@@ -222,14 +368,12 @@ const getSalesAnalysis = async (req, res) => {
   const { umkmId, category, startDate, endDate } = req.query;
 
   try {
-    const rawData = await fetchLedgerData();
+    const rawData = await fetchLocalLedgerData();
 
-    // Filter transaction list
     const filteredTx = rawData.filter(tx => {
       if (tx.status !== 'success') return false;
-      if (tx.from_app === 'SupplierHub') return false; // Filter out supplies (outflow)
+      if (tx.from_app === 'SupplierHub') return false;
 
-      // Apply Filters
       const txUmkmId = tx.to_user;
       const txCategory = (tx.metadata && tx.metadata.category) || 'Lainnya';
       const txDate = tx.timestamp.split(' ')[0];
@@ -242,9 +386,7 @@ const getSalesAnalysis = async (req, res) => {
       return true;
     });
 
-    // Aggregate by UMKM
     const umkmAggregate = {};
-    // Aggregate by Category
     const categoryAggregate = {};
     
     let totalSales = 0;
@@ -258,14 +400,12 @@ const getSalesAnalysis = async (req, res) => {
       totalSales += amt;
       salesCount++;
 
-      // UMKM aggregations
       if (!umkmAggregate[uName]) {
         umkmAggregate[uName] = { name: uName, total: 0, count: 0 };
       }
       umkmAggregate[uName].total += amt;
       umkmAggregate[uName].count++;
 
-      // Category aggregations
       if (!categoryAggregate[cat]) {
         categoryAggregate[cat] = { name: cat, total: 0, count: 0 };
       }
@@ -281,7 +421,7 @@ const getSalesAnalysis = async (req, res) => {
       },
       byUmkm: Object.values(umkmAggregate),
       byCategory: Object.values(categoryAggregate),
-      transactions: filteredTx.slice(0, 100) // limit to top 100 for readability
+      transactions: filteredTx.slice(0, 100)
     });
   } catch (error) {
     console.error('Sales analytical error:', error);
@@ -295,9 +435,8 @@ const getCashflowAnalysis = async (req, res) => {
   const { startDate, endDate } = req.query;
 
   try {
-    const rawData = await fetchLedgerData();
+    const rawData = await fetchLocalLedgerData();
 
-    // Inflows (POS/Marketplace sales) and Outflows (Supplier payments)
     const filteredTx = rawData.filter(tx => {
       if (tx.status !== 'success') return false;
       const txDate = tx.timestamp.split(' ')[0];
@@ -318,7 +457,7 @@ const getCashflowAnalysis = async (req, res) => {
       const f = Number(tx.fee) || 0;
       const t = Number(tx.tax) || 0;
       const dateParts = tx.timestamp.split(' ')[0].split('-');
-      const monthStr = `${dateParts[0]}-${dateParts[1]}`; // YYYY-MM
+      const monthStr = `${dateParts[0]}-${dateParts[1]}`;
 
       const isOutflow = tx.from_app === 'SupplierHub';
 
@@ -338,7 +477,6 @@ const getCashflowAnalysis = async (req, res) => {
       }
     });
 
-    // Update net trend
     Object.keys(monthlyTrend).forEach(m => {
       monthlyTrend[m].net = monthlyTrend[m].inflow - monthlyTrend[m].outflow;
     });
@@ -366,16 +504,14 @@ const getReports = async (req, res) => {
   const { category, sourceApp, startDate, endDate } = req.query;
   const isPremiumUser = req.user.is_premium === 1 || req.user.role === 'lecturer' || req.user.role === 'admin';
 
-  // 1. Report Access Premium Gate
   if (!isPremiumUser) {
     res.locals.errorMessage = 'Premium subscription required to generate report tables';
     return res.status(403).json({ error: res.locals.errorMessage });
   }
 
   try {
-    const rawData = await fetchLedgerData();
+    const rawData = await fetchLocalLedgerData();
 
-    // Filters matching lecturer/student needs
     const filteredReports = rawData.filter(tx => {
       if (tx.status !== 'success') return false;
       
@@ -406,6 +542,7 @@ const getReports = async (req, res) => {
 };
 
 module.exports = {
+  syncExternalData,
   getDashboardData,
   getSalesAnalysis,
   getCashflowAnalysis,

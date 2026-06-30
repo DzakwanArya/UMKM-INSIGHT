@@ -19,6 +19,8 @@ export default function SubscriptionPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [plans, setPlans] = useState([]);
+  const [selectedPlanId, setSelectedPlanId] = useState('7_days');
   
   // Checkout tracking states for simulation and input nominal
   const [inputAmount, setInputAmount] = useState(10000);
@@ -29,6 +31,27 @@ export default function SubscriptionPage() {
     return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(val);
   };
 
+  useEffect(() => {
+    const loadPlans = async () => {
+      try {
+        const data = await api.getSubscriptionPlans();
+        const availablePlans = data.plans || [];
+        setPlans(availablePlans);
+        if (availablePlans.length > 0) {
+          setSelectedPlanId(prev => prev && availablePlans.some(plan => plan.id === prev) ? prev : availablePlans[0].id);
+          setInputAmount(availablePlans[0].amount || 10000);
+        }
+      } catch (err) {
+        setError(err.message || 'Gagal memuat daftar paket subscription.');
+      }
+    };
+
+    loadPlans();
+  }, []);
+
+  const selectedPlan = plans.find((plan) => plan.id === selectedPlanId) || plans[0];
+  const selectedAmount = selectedPlan?.amount ?? inputAmount;
+
   const handleCheckout = async () => {
     setError('');
     setSuccess('');
@@ -36,10 +59,11 @@ export default function SubscriptionPage() {
 
     try {
       // 1. Contact backend to create payment session
-      const res = await api.createSubscription(inputAmount);
+      const res = await api.createSubscription(selectedAmount, selectedPlanId);
       const orderData = {
         ...res,
-        amount: inputAmount
+        amount: selectedAmount,
+        planId: selectedPlanId
       };
       setCurrentOrder(orderData);
 
@@ -203,8 +227,12 @@ export default function SubscriptionPage() {
                     <span className="font-mono text-indigo-400 font-semibold">{currentOrder.orderId}</span>
                   </div>
                   <div className="flex justify-between text-xs text-gray-400">
+                    <span>Paket:</span>
+                    <span className="font-bold text-white">{selectedPlan?.name || 'Premium'}</span>
+                  </div>
+                  <div className="flex justify-between text-xs text-gray-400">
                     <span>Nominal:</span>
-                    <span className="font-bold text-white">{formatCurrency(currentOrder.amount || inputAmount)}</span>
+                    <span className="font-bold text-white">{formatCurrency(currentOrder.amount || selectedAmount)}</span>
                   </div>
                   {!currentOrder.isMockPayment && (
                     <div className="rounded-lg bg-slate-800/40 p-3 text-[11px] text-gray-400 space-y-2 border border-slate-700/30">
@@ -310,8 +338,8 @@ export default function SubscriptionPage() {
               </div>
 
               <div className="flex items-baseline gap-1 py-2">
-                <span className="text-3xl font-extrabold text-white">Rp 10.000</span>
-                <span className="text-xs text-gray-400 font-semibold">/ minggu</span>
+                <span className="text-3xl font-extrabold text-white">{formatCurrency(selectedAmount)}</span>
+                <span className="text-xs text-gray-400 font-semibold">/ {selectedPlan?.durationDays ? `${selectedPlan.durationDays} hari` : 'paket'}</span>
               </div>
 
               <p className="text-xs text-gray-400 leading-relaxed">
@@ -338,22 +366,42 @@ export default function SubscriptionPage() {
                 </li>
               </ul>
 
-              {/* Input Nominal Kustom */}
+              {/* Plan selection */}
               <div className="space-y-2 pt-4 border-t border-slate-800/80">
-                <label className="text-xs text-gray-400 font-semibold block">Nominal Pembayaran (IDR)</label>
-                <div className="relative">
-                  <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 font-bold text-xs">Rp</span>
-                  <input
-                    type="number"
-                    value={inputAmount}
-                    onChange={(e) => setInputAmount(Math.max(0, parseInt(e.target.value) || 0))}
-                    disabled={loading || user?.role === 'lecturer' || user?.role === 'admin'}
-                    className="w-full bg-slate-900 border border-slate-700/60 rounded-xl py-2.5 pl-10 pr-4 text-white font-bold text-xs focus:outline-none focus:border-indigo-500/80 transition-all"
-                    placeholder="10000"
-                    min="1000"
-                  />
+                <label className="text-xs text-gray-400 font-semibold block">Pilih Durasi Langganan</label>
+                <div className="grid grid-cols-1 gap-2">
+                  {plans.length > 0 ? (
+                    plans.map((plan) => {
+                      const isSelected = plan.id === selectedPlanId;
+                      return (
+                        <button
+                          key={plan.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedPlanId(plan.id);
+                            setInputAmount(plan.amount || 10000);
+                          }}
+                          disabled={loading || user?.role === 'lecturer' || user?.role === 'admin'}
+                          className={`text-left rounded-xl border px-3 py-3 transition-all ${
+                            isSelected
+                              ? 'border-indigo-400 bg-indigo-500/15'
+                              : 'border-slate-700/50 bg-slate-900/50 hover:border-slate-500'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-white font-bold text-xs">{plan.name}</span>
+                            <span className="text-indigo-300 font-semibold text-[10px]">{plan.durationDays} hari</span>
+                          </div>
+                          <div className="text-[10px] text-gray-400 mt-1">{formatCurrency(plan.amount)}</div>
+                        </button>
+                      );
+                    })
+                  ) : (
+                    <div className="rounded-xl border border-slate-700/50 bg-slate-900/50 px-3 py-3 text-[10px] text-gray-400">
+                      Memuat paket subscription...
+                    </div>
+                  )}
                 </div>
-                <p className="text-[10px] text-gray-500">Minimal pembayaran Rp 1.000 (Transfer Bank / Virtual Account)</p>
               </div>
 
               {/* Checkout CTA */}

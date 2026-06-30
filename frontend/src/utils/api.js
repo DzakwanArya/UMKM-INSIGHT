@@ -83,11 +83,22 @@ export const api = {
   },
 
   // Subscriptions
-  createSubscription: async (amount = 10000) => {
+  getSubscriptionPlans: async () => {
+    const res = await fetch(`${API_BASE}/subscription/plans`, {
+      headers: getHeaders()
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to load subscription plans');
+    return data;
+  },
+
+  createSubscription: async (amount = 10000, planId = null) => {
+    const payload = planId ? { planId } : { amount: Number(amount) };
+
     const res = await fetch(`${API_BASE}/subscription/create`, {
       method: 'POST',
       headers: getHeaders(),
-      body: JSON.stringify({ amount: Number(amount) })
+      body: JSON.stringify(payload)
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed to create subscription checkout');

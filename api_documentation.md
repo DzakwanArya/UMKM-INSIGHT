@@ -19,18 +19,21 @@ Dokumen ini berisi spesifikasi lengkap mengenai REST API yang digunakan pada apl
 
 | Kategori | Metode | Endpoint | Proteksi | Keterangan |
 | :--- | :--- | :--- | :--- | :--- |
-| **Autentikasi** | `POST` | `/auth/register` | Publik | Mendaftarkan pengguna baru (Umum/Dosen/Admin) |
+| **Autentikasi** | `POST` | `/auth/register` | Publik | Mendaftarkan pengguna baru (user / lecturer / admin) |
 | | `POST` | `/auth/login` | Publik | Masuk ke sistem dan mendapatkan token JWT |
 | | `GET` | `/auth/profile` | JWT | Mengambil profil pengguna yang sedang login |
-| **Analitis** | `GET` | `/analytics/dashboard` | JWT | Mengambil metrik ringkasan dashboard dan grafik |
+| **Analitis** | `POST` | `/analytics/sync` | JWT | Menyinkronisasi data eksternal ke tabel lokal dan menyimpan ledger UMKM |
+| | `GET` | `/analytics/dashboard` | JWT | Mengambil metrik ringkasan dashboard dan grafik |
 | | `GET` | `/analytics/sales` | JWT | Mengambil analisis penjualan (bisa difilter) |
 | | `GET` | `/analytics/cashflow` | JWT | Mengambil analisis arus kas masuk & keluar |
-| | `GET` | `/analytics/reports` | JWT + Premium | Mengambil data laporan transaksi penuh untuk ekspor |
-| **Langganan** | `POST` | `/subscription/create` | JWT | Memulai pembayaran langganan (Snap Token) |
+| | `GET` | `/analytics/reports` | JWT + Premium/Admin/Lecturer | Mengambil data laporan transaksi penuh untuk ekspor |
+| **Langganan** | `GET` | `/subscription/plans` | Publik | Mengambil daftar paket langganan yang tersedia |
+| | `POST` | `/subscription/create` | JWT | Memulai pembayaran langganan dengan `planId` atau nominal |
 | | `GET` | `/subscription/status` | JWT | Memeriksa status premium pengguna saat ini |
 | | `POST` | `/subscription/verify/:orderId` | JWT | Memverifikasi status pembayaran langsung ke Midtrans |
 | | `POST` | `/subscription/webhook` | Publik | Menerima notifikasi status transaksi dari Midtrans |
-| | `POST` | `/subscription/simulate-payment`| Publik | Mensimulasikan pembayaran sukses/gagal (offline) |
+| | `POST` | `/subscription/simulate-payment` | Publik | Mensimulasikan pembayaran sukses/gagal (offline) |
+| **Bank / Ledger** | `GET` | `/bank/transactions` | JWT | Mengambil ringkasan pendapatan dan daftar transaksi bank/subscription |
 
 ---
 
@@ -55,7 +58,11 @@ Mendaftarkan akun pengguna dengan peran tertentu.
   ```json
   {
     "message": "User registered successfully",
-    "userId": "usr-8a2b3c4d"
+    "user": {
+      "id": "usr-8a2b3c4d",
+      "username": "budi_umkm",
+      "role": "user"
+    }
   }
   ```
 * **Response Error (400 Bad Request):**
@@ -104,18 +111,39 @@ Mengembalikan informasi profil lengkap dari pengguna yang sedang aktif berdasark
 * **Response Sukses (200 OK):**
   ```json
   {
-    "id": "usr-8a2b3c4d",
-    "username": "budi_umkm",
-    "role": "user",
-    "is_premium": 1,
-    "premium_until": "2026-06-30 14:00:00",
-    "created_at": "2026-06-10T15:00:00Z"
+    "user": {
+      "id": "usr-8a2b3c4d",
+      "username": "budi_umkm",
+      "role": "user",
+      "is_premium": 1,
+      "premium_until": "2026-06-30 14:00:00"
+    }
   }
   ```
 
 ---
 
 ### 2. Kategori: Analitis Keuangan (`/analytics`)
+
+#### 2.0 Sinkronisasi Data Eksternal ke Lokal
+Mengambil data dari sumber eksternal (atau fallback mock jika gateway tidak tersedia) lalu menyimpan transaksi ke tabel lokal `marketplace_transactions`, `pos_transactions`, dan `supplier_transactions`.
+* **Metode:** `POST`
+* **Endpoint:** `/analytics/sync`
+* **Headers:** `Authorization: Bearer <token>`
+* **Request Body:** Kosong / tidak wajib
+* **Response Sukses (200 OK):**
+  ```json
+  {
+    "success": true,
+    "message": "Sync completed successfully",
+    "summary": {
+      "syncedMarketplace": 36,
+      "syncedPos": 30,
+      "syncedSupplier": 40,
+      "totalSynced": 106
+    }
+  }
+  ```
 
 #### 2.1 Ringkasan Dashboard
 Menyajikan data agregasi keuangan utama (total pemasukan, pengeluaran, laba bersih, potongan, pajak) serta data grafik tren penjualan 7 hari terakhir.
@@ -239,30 +267,53 @@ Mengambil data seluruh riwayat transaksi secara detail yang dapat difilter untuk
 
 ### 3. Kategori: Layanan Langganan (`/subscription`)
 
-#### 3.1 Inisialisasi Transaksi Pembayaran
-Membuat sesi pembayaran baru di Midtrans Sandbox dengan nominal kustom. Mengembalikan token transaksi (Snap Token) dan URL pembayaran.
+#### 3.1 Daftar Paket Langganan Tersedia
+Mengambil daftar paket langganan yang ditampilkan pada frontend.
+* **Metode:** `GET`
+* **Endpoint:** `/subscription/plans`
+* **Response Sukses (200 OK):**
+  ```json
+  {
+    "success": true,
+    "plans": [
+      { "id": "7_days", "name": "Premium 7 Hari", "durationDays": 7, "amount": 10000 },
+      { "id": "1_month", "name": "Premium 1 Bulan", "durationDays": 30, "amount": 30000 },
+      { "id": "3_months", "name": "Premium 3 Bulan", "durationDays": 90, "amount": 80000 },
+      { "id": "1_year", "name": "Premium 1 Tahun", "durationDays": 365, "amount": 250000 }
+    ]
+  }
+  ```
+
+#### 3.2 Inisialisasi Transaksi Pembayaran
+Membuat sesi pembayaran baru untuk paket langganan yang dipilih. `planId` adalah cara yang disarankan; jika tidak ada, sistem dapat menggunakan `amount` sebagai fallback.
 * **Metode:** `POST`
 * **Endpoint:** `/subscription/create`
 * **Headers:** `Authorization: Bearer <token>`
 * **Request Body:**
   ```json
   {
-    "amount": 15000
+    "planId": "1_month"
   }
   ```
-  *(Catatan: Nominal minimal adalah Rp 1.000, dibatasi hanya metode Transfer Bank/Virtual Account)*
+  atau
+  ```json
+  {
+    "amount": 30000,
+    "planId": "1_month"
+  }
+  ```
 * **Response Sukses (201 Created):**
   ```json
   {
     "message": "Subscription payment initiated",
     "orderId": "SUB-usr-8a2b-1781104902274",
-    "snapToken": "c8695d73-2e06-4b2a-89a1-77884d3b6f2c",
-    "redirectUrl": "https://app.sandbox.midtrans.com/snap/v2/vtweb/c8695d73-2e06-4b2a-89a1-77884d3b6f2c",
-    "isMockPayment": false
+    "snapToken": "MOCK-SNAP-TOKEN-SUB-usr-8a2b-1781104902274",
+    "redirectUrl": "https://app.sandbox.midtrans.com/snap/v2/vtweb/MOCK-SNAP-TOKEN-SUB-usr-8a2b-1781104902274",
+    "isMockPayment": true
   }
   ```
 
-#### 3.2 Cek Status Premium Aktif
+#### 3.3 Cek Status Premium Aktif
 Memeriksa apakah akun pengguna saat ini memiliki hak akses premium dan masa berlakunya.
 * **Metode:** `GET`
 * **Endpoint:** `/subscription/status`
@@ -271,12 +322,12 @@ Memeriksa apakah akun pengguna saat ini memiliki hak akses premium dan masa berl
   ```json
   {
     "isPremium": true,
-    "premiumUntil": "2026-07-01 13:30:00"
+    "premiumUntil": "2026-07-30 17:10:25"
   }
   ```
 
-#### 3.3 Verifikasi Status Transaksi Langsung (Localhost Bypass)
-Menanyakan langsung status transaksi ke API Midtrans Sandbox (menggunakan Server Key Anda) untuk memperbarui database secara instan (berguna karena localhost tidak bisa menerima webhook langsung).
+#### 3.4 Verifikasi Status Transaksi Langsung (Localhost Bypass)
+Menanyakan langsung status transaksi ke API Midtrans Sandbox (menggunakan Server Key Anda) untuk memperbarui database lokal jika transaksi sudah sampai `settlement`.
 * **Metode:** `POST`
 * **Endpoint:** `/subscription/verify/:orderId`
 * **Headers:** `Authorization: Bearer <token>`
@@ -290,8 +341,8 @@ Menanyakan langsung status transaksi ke API Midtrans Sandbox (menggunakan Server
   }
   ```
 
-#### 3.4 Webhook Notifikasi Midtrans
-Menerima pemberitahuan perubahan status pembayaran secara asinkron langsung dari server Midtrans (hanya berfungsi jika backend dihosting online atau menggunakan Ngrok).
+#### 3.5 Webhook Notifikasi Midtrans
+Menerima pemberitahuan perubahan status pembayaran secara asinkron langsung dari server Midtrans (berguna jika deploy ke server publik atau menggunakan tunnel).
 * **Metode:** `POST`
 * **Endpoint:** `/subscription/webhook`
 * **Request Body:** *Payload standar notifikasi dari Midtrans (berisi `order_id`, `transaction_status`, `fraud_status`, dll.)*
@@ -304,8 +355,8 @@ Menerima pemberitahuan perubahan status pembayaran secara asinkron langsung dari
   }
   ```
 
-#### 3.5 Simulasi Pembayaran Offline (Mock Mode)
-Mensimulasikan status sukses/gagal secara instan untuk kebutuhan demo tanpa koneksi internet (hanya aktif jika tidak ada kunci Midtrans asli di `.env`).
+#### 3.6 Simulasi Pembayaran Offline (Mock Mode)
+Mensimulasikan status sukses/gagal secara instan untuk kebutuhan demo tanpa koneksi internet (aktif ketika mode mock dipakai di backend).
 * **Metode:** `POST`
 * **Endpoint:** `/subscription/simulate-payment`
 * **Request Body:**
@@ -321,5 +372,37 @@ Mensimulasikan status sukses/gagal secara instan untuk kebutuhan demo tanpa kone
     "message": "Notification processed successfully",
     "orderId": "SUB-usr-8a2b-1781104902274",
     "status": "settlement"
+  }
+  ```
+
+---
+
+### 4. Kategori: Bank / Ledger (`/bank`)
+
+#### 4.1 Riwayat Transaksi Bank
+Mengambil data transaksi pembayaran langganan yang sudah berhasil disetujui, beserta ringkasan total transaksi dan total revenue bank.
+* **Metode:** `GET`
+* **Endpoint:** `/bank/transactions`
+* **Headers:** `Authorization: Bearer <token>`
+* **Response Sukses (200 OK):**
+  ```json
+  {
+    "success": true,
+    "summary": {
+      "totalTransactions": 2,
+      "totalRevenue": 60000
+    },
+    "transactions": [
+      {
+        "id": "BANK-SUB-123",
+        "subscription_id": "SUB-usr-8a2b-1781104902274",
+        "user_id": "usr-8a2b3c4d",
+        "amount": 30000,
+        "plan_type": "1_month",
+        "status": "success",
+        "created_at": "2026-07-01 12:34:56",
+        "username": "budi_umkm"
+      }
+    ]
   }
   ```

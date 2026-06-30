@@ -25,7 +25,16 @@ const validateAuth = (req, res, next) => {
 };
 
 const validateSubscription = (req, res, next) => {
-  const { amount } = req.body;
+  const { amount, planId } = req.body;
+
+  if (planId) {
+    const validPlans = ['7_days', '1_month', '3_months', '1_year'];
+    if (!validPlans.includes(planId)) {
+      res.locals.errorMessage = 'Invalid subscription plan ID';
+      return res.status(400).json({ error: res.locals.errorMessage });
+    }
+    return next();
+  }
 
   // Validasi agar nominal yang dimasukkan berupa angka positif valid (minimal Rp 1.000)
   if (amount === undefined || typeof amount !== 'number' || amount < 1000) {
